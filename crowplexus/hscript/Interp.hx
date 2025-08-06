@@ -30,6 +30,7 @@ import crowplexus.iris.IrisUsingClass;
 import crowplexus.iris.utils.UsingEntry;
 import haxe.Constraints.IMap;
 import haxe.PosInfos;
+import crowplexus.iris.utils.InterpretedClass;
 
 private enum Stop {
 	SBreak;
@@ -72,6 +73,8 @@ class Interp {
 	#if hscriptPos
 	var curExpr: Expr;
 	#end
+
+	var interpretedClasses: Map<String, InterpretedClass> = new Map();
 
 	public var showPosOnLog: Bool = true;
 
@@ -517,17 +520,36 @@ class Interp {
 					return imports.get(n);
 
 				var c: Dynamic = getOrImportClass(v);
-				if (c == null) // if it's still null then throw an error message.
-					return warn(ECustom("Import" + aliasStr + " of class " + v + " could not be added"));
+				if (c == null && interpretedClasses.exists(v))
+					c = interpretedClasses.get(v);
+				if (c == null)
+					return warn(ECustom("Import" + (as != null ? " as " + as : "") + " of class " + v + " could not be added"));
 				else {
 					imports.set(n, c);
 					if (as != null)
 						imports.set(as, c);
-					// resembles older haxe versions where you could use both the alias and the import
-					// for all the "Colour" enjoyers :D
 				}
-				return null; // yeah. -Crow
-
+				return null;
+			// ...inside expr(e: Expr)...
+			case EClass(name, extend, fields):
+				// 'name' is already the full name with package (e.g., "foo.bar.Baz")
+				var parent = extend != null ? interpretedClasses.get(extend) : null;
+				var cls = new InterpretedClass(name, parent);
+				// Store fields/methods in cls as needed
+				for (field in fields) {
+					switch (field.kind) {
+						case KFunction(f):
+							Reflect.setField(cls, field.name, function(args: Array<Dynamic>) {
+								// Optionally implement 'this' binding here
+								return this.expr(f.expr);
+							});
+						case KVar(v):
+							Reflect.setField(cls, field.name, v.expr != null ? this.expr(v.expr) : null);
+					}
+				}
+				interpretedClasses.set(name, cls); // Register with full name (including package)
+				return null;
+			// ...existing code...
 			case EFunction(params, fexpr, name, _):
 				var capturedLocals = duplicate(locals);
 				var me = this;
@@ -761,6 +783,24 @@ class Interp {
 				return value;
 			case EUsing(name):
 				useUsing(name);
+			case EClass(name, extend, fields):
+				var parent = extend != null ? interpretedClasses.get(extend) : null;
+				var cls = new InterpretedClass(name, parent);
+				// Store fields/methods in cls as needed
+				for (field in fields) {
+					switch (field.kind) {
+						case KFunction(f):
+							Reflect.setField(cls, field.name, function(args: Array<Dynamic>) {
+								// You may want to implement 'this' binding here
+								// For now, just call the function with args
+								// (You can enhance this for 'this' support)
+								return this.expr(f.expr);
+							});
+						case KVar(v):
+							Reflect.setField(cls, field.name, v.expr != null ? this.expr(v.expr) : null);
+					}
+				}
+				interpretedClasses.set(name, cls);
 		}
 		return null;
 	}
@@ -853,18 +893,14 @@ class Interp {
 	function get(o: Dynamic, f: String): Dynamic {
 		if (o == null)
 			error(EInvalidAccess(f));
-		return {
-			#if php
-			// https://github.com/HaxeFoundation/haxe/issues/4915
-			try {
-				Reflect.getProperty(o, f);
-			} catch (e:Dynamic) {
-				Reflect.field(o, f);
-			}
-			#else
-			Reflect.getProperty(o, f);
-			#end
+		// Interpreted class instance?
+		if (Reflect.hasField(o, "__class__")) {
+			var cls = Reflect.field(o, "__class__");
+			var val = cls.getField(f);
+			if (val != null)
+				return val;
 		}
+		return Reflect.getProperty(o, f);
 	}
 
 	function set(o: Dynamic, f: String, v: Dynamic): Dynamic {
@@ -990,6 +1026,21 @@ class Interp {
 	}
 
 	function cnew(cl: String, args: Array<Dynamic>): Dynamic {
+		if (interpretedClasses.exists(cl)) {
+			var cls = interpretedClasses.get(cl);
+			var instance = {};
+			Reflect.setField(instance, "__class__", cls);
+			// Copy fields from class to instance
+			for (field in Reflect.fields(cls)) {
+				if (field != "name" && field != "parent" && field != "siblings")
+					Reflect.setField(instance, field, Reflect.field(cls, field));
+			}
+			// Optionally call a constructor method if defined
+			if (Reflect.hasField(cls, "new") && Reflect.isFunction(Reflect.field(cls, "new"))) {
+				Reflect.callMethod(instance, Reflect.field(cls, "new"), args);
+			}
+			return instance;
+		}
 		var c = Type.resolveClass(cl);
 		if (c == null)
 			c = resolve(cl);

@@ -461,6 +461,43 @@ class Printer {
 			case EUsing(name):
 				add("using ");
 				add(name);
+			case EClass(name, extend, fields):
+				add("class " + name);
+				if (extend != null && extend != "") {
+					add(" extends " + extend);
+				}
+				add(" {\n");
+				incrementIndent();
+				for (field in fields) {
+					add(tabs);
+					switch (field.kind) {
+						case KFunction(func):
+							add("function " + field.name + "(");
+							var first = true;
+							for (a in func.args) {
+								if (first)
+									first = false;
+								else
+									add(", ");
+								addArgument(a);
+							}
+							add(")");
+							addType(func.ret);
+							add(" ");
+							expr(func.expr);
+							add(";\n");
+						case KVar(v):
+							add("var " + field.name);
+							addType(v.type);
+							if (v.expr != null) {
+								add(" = ");
+								expr(v.expr);
+							}
+							add(";\n");
+					}
+				}
+				decrementIndent();
+				add(tabs + "}");
 		}
 	}
 

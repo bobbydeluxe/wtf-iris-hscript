@@ -983,6 +983,17 @@ class Parser {
 				// mk(EPackage(path.join(".")));
 				packageName = path.join(".");
 				mk(EIgnore(false));
+			case "class":
+				var name = getIdent();
+				var extend: Null<String> = null;
+				if (maybe(TId("extends")))
+					extend = getIdent();
+				ensure(TBrOpen);
+				var fields = [];
+				while (!maybe(TBrClose))
+					fields.push(parseField());
+				var fullName = packageName != null && packageName != "" ? packageName + "." + name : name;
+				mk(EClass(fullName, extend, fields), p1);
 			default:
 				null;
 		}
